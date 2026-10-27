@@ -106,6 +106,12 @@ section h2{font-size:1rem;margin:0 0 8px;font-weight:700}
 details summary{cursor:pointer;font-weight:700}
 details ul{margin:8px 0 0;padding-inline-start:20px;color:var(--y-soft);font-size:.92rem;line-height:1.7}
 .note{font-size:.8rem;color:var(--y-soft);text-align:center;margin:2px 0 0}
+.teach{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;font-size:.95rem}
+.teach[hidden]{display:none}
+.teach button{min-width:46px;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--key-hi);color:var(--y);font-size:1.2rem;font-weight:700;cursor:pointer}
+#learned{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+#learned li{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--key);border-radius:10px;padding:8px 10px;direction:ltr}
+#learned button{background:none;border:1px solid var(--line);color:var(--y);border-radius:8px;padding:4px 10px;cursor:pointer}
 button:focus-visible,summary:focus-visible{outline:2px solid #fff;outline-offset:2px}
 </style>
 </head>
@@ -123,6 +129,7 @@ button:focus-visible,summary:focus-visible{outline:2px solid #fff;outline-offset
     <div class="heard" id="heard"></div>
     <input id="expr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="Expression">
     <div id="result" aria-live="polite">0</div>
+    <div id="teach" class="teach" hidden></div>
   </div>
 
   <div class="controls">
@@ -150,13 +157,18 @@ button:focus-visible,summary:focus-visible{outline:2px solid #fff;outline-offset
     <ul id="hist"></ul>
   </section>
 
+  <details class="card" id="learned-box" hidden>
+    <summary id="t-learned">Mots appris</summary>
+    <ul id="learned"></ul>
+  </details>
+
   <details class="card">
     <summary id="t-ex">Exemples à dire</summary>
     <ul id="examples"></ul>
   </details>
 
   <p class="note" id="t-note"></p>
-  <p class="note" id="ver">Version 5 · écoute manuelle</p>
+  <p class="note" id="ver">Version 6 · écoute manuelle</p>
 </div>
 
 <script>
@@ -246,17 +258,18 @@ const RULES=[
   mk(['racine carree de','racine carree','racine','الجذر التربيعي ل','الجذر التربيعي','جذر تربيعي ل','جذر تربيعي','جذر'],' sqrt '),
   mk(['au carre','تربيعا','تربيع','مربع'],' ^ 2 '),
   mk(['au cube','تكعيب','مكعب'],' ^ 3 '),
-  mk(['parenthese ouverte','ouvre la parenthese','ouvrir la parenthese','ouvre parenthese','ouvrez parenthese',
+  mk(['ouvre','ouvrez','ouvrir','ouvert','ouverte','parenthese ouverte','ouvre la parenthese','ouvrir la parenthese','ouvre parenthese','ouvrez parenthese',
       'قوس مفتوح','فتح قوس','افتح قوس','قوس مفتوحه','بدايه قوس'],' ( '),
-  mk(['parenthese fermee','ferme la parenthese','ferme parenthese','fermer la parenthese','fermez parenthese',
+  mk(['ferme','fermez','fermer','fermee','parenthese fermee','ferme la parenthese','ferme parenthese','fermer la parenthese','fermez parenthese',
       'قوس مغلق','اغلاق قوس','اغلق قوس','قوس مغلقه','قفل قوس'],' ) '),
   mk(['elevee a la puissance','a la puissance','puissance','exposant','مرفوع الي','مرفوعه الي','اس','قوه'],' ^ '),
-  mk(['multiplie par','multiplier par','multiplie','fois','x','ضرب في','مضروب في','مضروبه في','مضروبا في','ضرب','ضارب','في'],' * '),
-  mk(['divise par','divisee par','divise','divisee','sur','قسمه علي','مقسوم علي','مقسومه علي','مقسوما علي','قسم علي','تقسيم علي','قسمه','علي'],' / '),
-  mk(['plus','زايد','زائد','جمع','اضافه','يضاف الي'],' + '),
-  mk(['moins','ناقص','طرح','ينقص','مطروح من','مطروحا من','مطروح'],' - ')
+  mk(['multiplie par','multiplier par','multiplie','fois','quoi','foi','foie','voix','x','ضرب في','مضروب في','مضروبه في','مضروبا في','ضرب','ضارب','في'],' * '),
+  mk(['divise par','divisee par','diviser par','devise par','divise','divisee','diviser','devise','sur','قسمه علي','مقسوم علي','مقسومه علي','مقسوما علي','قسم علي','تقسيم علي','قسمه','علي'],' / '),
+  mk(['plus','plu','pluss','زايد','زائد','جمع','اضافه','يضاف الي'],' + '),
+  mk(['moins','moin','mouin','moi','ناقص','طرح','ينقص','مطروح من','مطروحا من','مطروح'],' - ')
 ];
 
+const ALIAS={};   /* mots appris par l'utilisateur : mot normalisé -> symbole */
 function tokenize(text){
   let s=norm(text).replace(/\s+/g,' ').trim();
   s=s.replace(/[×✕✖·]/g,' * ').replace(/÷/g,' / ').replace(/[−–—]/g,' - ')
@@ -278,6 +291,12 @@ function tokenize(text){
   const out=[]; let i=0;
   while(i<w.length){
     const t=w[i];
+    if(Object.prototype.hasOwnProperty.call(ALIAS,t)){ out.push(ALIAS[t]); i++; continue; }
+    if(t==='parenthese'||t==='parentheses'||t==='entendu'){
+      /* « parenthèse » seul : on ouvre si aucune n'est ouverte, sinon on ferme */
+      const o=out.filter(function(x){return x==='(';}).length, c=out.filter(function(x){return x===')';}).length;
+      out.push(o>c?')':'('); i++; continue;
+    }
     if(/^[+\-*\/^()%]$/.test(t) || t==='sqrt'){ out.push(t); i++; continue; }
     if(t==='et'){ out.push('+'); i++; continue; }
     let num=null;
@@ -376,6 +395,8 @@ const I18N={
          'service-not-allowed':'Accès au micro refusé. Autorisez-le dans les réglages du navigateur.',
          'no-speech':'Aucune voix détectée. Réessayez.','network':'Connexion internet requise pour la reconnaissance vocale.',
          'audio-capture':'Aucun micro détecté.'},
+    learned:'Mots appris',
+    teach:function(w){return '« '+w+' » signifie :';},
     exTitle:'Exemples à dire',
     ex:['« douze plus huit fois trois »','« racine carrée de seize »','« vingt pour cent de deux cents »',
         '« trois virgule cinq fois deux »','« deux puissance dix »','« parenthèse ouverte deux plus trois parenthèse fermée fois quatre »'],
@@ -395,6 +416,8 @@ const I18N={
          'service-not-allowed':'تم رفض الوصول إلى الميكروفون. اسمح به من إعدادات المتصفح.',
          'no-speech':'لم يتم التقاط أي صوت. حاول مجددًا.','network':'يلزم الاتصال بالإنترنت للتعرف على الصوت.',
          'audio-capture':'لم يتم العثور على ميكروفون.'},
+    learned:'كلمات تم تعلّمها',
+    teach:function(w){return '«'+w+'» تعني:';},
     exTitle:'أمثلة للنطق',
     ex:['«خمسة وعشرون زائد ثلاثة»','«ثلاثة ضرب أربعة»','«جذر تربيعي ستة عشر»',
         '«عشرون في المائة من مائتين»','«اثنان أس عشرة»','«ثلاثة آلاف ناقص خمسمائة»'],
@@ -421,6 +444,7 @@ function applyLang(l){
   $('lang-ar').setAttribute('aria-pressed',String(l==='ar'));
   $('t-title').textContent=t.title; document.title=t.title;
   $('t-tts').textContent=t.tts; $('t-hist').textContent=t.hist; $('clear-hist').textContent=t.clear;
+  $('t-learned').textContent=t.learned; renderLearned();
   $('t-ex').textContent=t.exTitle; $('t-note').textContent=t.note;
   inp.placeholder=t.ph;
   $('examples').innerHTML=''; t.ex.forEach(function(x){ const li=document.createElement('li'); li.textContent=x; $('examples').appendChild(li); });
@@ -445,7 +469,7 @@ KEYS.forEach(function(k){
   $('pad').appendChild(b);
 });
 function press(a){
-  if(a==='clear'){ inp.value=''; resEl.className=''; resEl.textContent='0'; heardEl.textContent=''; return; }
+  if(a==='clear'){ hideTeach(); inp.value=''; resEl.className=''; resEl.textContent='0'; heardEl.textContent=''; return; }
   if(a==='eq'){ run(inp.value); return; }
   const s=(inp.selectionStart==null)?inp.value.length:inp.selectionStart;
   const e=(inp.selectionEnd==null)?s:inp.selectionEnd;
@@ -464,14 +488,49 @@ function errMsg(e){
   if(e instanceof CalcError){ const m=t[e.code]; return typeof m==='function'?m(e.info):(m||t.syntax); }
   return t.syntax;
 }
-function showError(e){ resEl.className='err'; resEl.textContent=errMsg(e); }
+let lastText='';
+const SYM_LABEL={'+':'+','-':'−','*':'×','/':'÷','(':'(',')':')','^':'^','%':'%','sqrt':'√'};
+function hideTeach(){ const b=$('teach'); b.hidden=true; b.innerHTML=''; }
+function showTeach(word){
+  const box=$('teach'); box.innerHTML='';
+  const q=document.createElement('span'); q.textContent=I18N[lang].teach(word); box.appendChild(q);
+  ['+','-','*','/','(',')','^','%','sqrt'].forEach(function(sym){
+    const b=document.createElement('button'); b.type='button'; b.textContent=SYM_LABEL[sym];
+    b.addEventListener('click',function(){ addAlias(word,sym); });
+    box.appendChild(b);
+  });
+  box.hidden=false;
+}
+function addAlias(word,sym){
+  ALIAS[word]=sym; store('cv-alias',JSON.stringify(ALIAS)); renderLearned(); hideTeach();
+  if(lastText) run(lastText);
+}
+function renderLearned(){
+  const ul=$('learned'); ul.innerHTML='';
+  const keys=Object.keys(ALIAS);
+  $('learned-box').hidden=!keys.length;
+  keys.forEach(function(w){
+    const li=document.createElement('li');
+    const a=document.createElement('span'); a.textContent='« '+w+' »  →  '+(SYM_LABEL[ALIAS[w]]||ALIAS[w]);
+    const d=document.createElement('button'); d.type='button'; d.textContent='✕';
+    d.addEventListener('click',function(){ delete ALIAS[w]; store('cv-alias',JSON.stringify(ALIAS)); renderLearned(); });
+    li.appendChild(a); li.appendChild(d); ul.appendChild(li);
+  });
+}
+function showError(e){
+  resEl.className='err'; resEl.textContent=errMsg(e);
+  hideTeach();
+  if(e instanceof CalcError && e.code==='unknown' && e.info) showTeach(e.info);
+}
 function showResult(r){
+  hideTeach();
   resEl.className=''; resEl.textContent=fmt(r.value);
   inp.value=r.expr;
   addHist(r.expr,fmt(r.value));
   if($('tts').checked) speak(r.value);
 }
 function run(text){
+  lastText=text;
   try{ showResult(calculate(text)); }
   catch(e){ showError(e); }
 }
@@ -500,6 +559,7 @@ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const NSR=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform()&&window.Capacitor.Plugins)
   ?window.Capacitor.Plugins.SpeechRecognition:null;
 function handleMatches(list){
+  if(list&&list.length) lastText=list[0];
   if(!list||!list.length){ setStatus(I18N[lang].mic['no-speech'],true); return; }
   heardEl.textContent=I18N[lang].heard+list[0];
   let firstErr=null;
@@ -640,6 +700,7 @@ $('clear-hist').addEventListener('click',function(){ history=[]; store('cv-hist'
 $('lang-fr').addEventListener('click',function(){ applyLang('fr'); });
 $('lang-ar').addEventListener('click',function(){ applyLang('ar'); });
 try{ history=JSON.parse(load('cv-hist')||'[]')||[]; }catch(e){ history=[]; }
+try{ Object.assign(ALIAS,JSON.parse(load('cv-alias')||'{}')||{}); }catch(e){}
 $('tts').checked=(load('cv-tts')==='1');
 applyLang(load('cv-lang')==='ar'?'ar':'fr');
 if(!SR && !NSR) setStatus(I18N[lang].nosr,true);
