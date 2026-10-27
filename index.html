@@ -58,6 +58,9 @@ h1{font-size:1.25rem;margin:0;font-weight:700;letter-spacing:.2px}
 }
 #mic svg{width:38px;height:38px;fill:#000}
 #mic.on{animation:pulse 1.2s infinite}
+#mic .ic-stop{display:none}
+#mic.on .ic-mic{display:none}
+#mic.on .ic-stop{display:block}
 @keyframes pulse{
   0%{box-shadow:0 0 0 0 rgba(255,214,10,.55)}
   70%{box-shadow:0 0 0 22px rgba(255,214,10,0)}
@@ -124,7 +127,8 @@ button:focus-visible,summary:focus-visible{outline:2px solid #fff;outline-offset
 
   <div class="controls">
     <button id="mic" aria-label="Micro">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 0 0-7 0v5A3.5 3.5 0 0 0 12 14Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9.5a1 1 0 1 0 0 2h5a1 1 0 1 0 0-2H13v-2.59A6 6 0 0 0 18 10.5Z"/></svg>
+      <svg class="ic-mic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 0 0-7 0v5A3.5 3.5 0 0 0 12 14Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9.5a1 1 0 1 0 0 2h5a1 1 0 1 0 0-2H13v-2.59A6 6 0 0 0 18 10.5Z"/></svg>
+      <svg class="ic-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>
     </button>
     <div class="side">
       <div id="status"></div>
@@ -152,6 +156,7 @@ button:focus-visible,summary:focus-visible{outline:2px solid #fff;outline-offset
   </details>
 
   <p class="note" id="t-note"></p>
+  <p class="note" id="ver">Version 5 · écoute manuelle</p>
 </div>
 
 <script>
@@ -362,7 +367,7 @@ const I18N={
     title:'Calculatrice vocale', tts:'Lire le résultat à voix haute', hist:'Historique', clear:'Effacer',
     empty:'Aucun calcul pour le moment.', ph:'Dites ou saisissez un calcul',
     tap:'Appuyez sur le micro et parlez.', listening:'Je vous écoute…', heard:'Entendu : ',
-    keepOn:'Je vous écoute… Dites l’opération, puis touchez le micro pour terminer.',
+    keepOn:'Écoute en cours… Touchez le bouton carré pour terminer.',
     prompt:'Dites l’opération',
     nosr:'La reconnaissance vocale n’est pas disponible sur ce navigateur. Utilisez Chrome ou le clavier ci-dessous.',
     err:{unknown:function(x){return 'Mot non compris : « '+x+' ».';},syntax:'Expression incomplète ou incorrecte.',
@@ -381,7 +386,7 @@ const I18N={
     title:'آلة حاسبة صوتية', tts:'قراءة النتيجة بصوت عالٍ', hist:'السجل', clear:'مسح',
     empty:'لا توجد عمليات بعد.', ph:'انطق أو اكتب عملية حسابية',
     tap:'اضغط على الميكروفون وتكلّم.', listening:'أنا أستمع إليك…', heard:'سُمع: ',
-    keepOn:'أنا أستمع… انطق العملية ثم المس الميكروفون للإنهاء.',
+    keepOn:'الاستماع جارٍ… المس الزر المربع للإنهاء.',
     prompt:'انطق العملية',
     nosr:'التعرف على الصوت غير متاح في هذا المتصفح. استعمل Chrome أو لوحة الأرقام أدناه.',
     err:{unknown:function(x){return 'كلمة غير مفهومة: «'+x+'».';},syntax:'العملية ناقصة أو غير صحيحة.',
@@ -537,9 +542,9 @@ function setListening(on){
   listening=on; micBtn.classList.toggle('on',on);
   setStatus(on?I18N[lang].listening:I18N[lang].tap);
 }
-/* Écoute continue (moteur de Chrome) : une seule session longue, avec reprise automatique si le
-   moteur s'arrête trop tôt. On termine au toucher du micro ou après ~3,5 s de silence. */
-let userStopped=false, idleDone=false, idleTimer=null, carry=[], restarts=0;
+/* Écoute MANUELLE (moteur de Chrome) : elle démarre au toucher du micro et ne s'arrête qu'au
+   toucher suivant (bouton carré). Si le moteur s'interrompt seul, l'écoute reprend automatiquement. */
+let userStopped=false, fatalErr=false, idleTimer=null, carry=[], restarts=0;
 function previewTry(text){
   try{ const r=calculate(text); resEl.className=''; resEl.textContent=fmt(r.value); inp.value=r.expr; }catch(e){}
 }
@@ -558,47 +563,43 @@ function mergeSeg(list){
   });
   return out;
 }
-function armIdle(ms){
-  clearTimeout(idleTimer);
-  idleTimer=setTimeout(function(){ idleDone=true; try{ rec.stop(); }catch(e){} },ms);
-}
 function startRec(){
-  userStopped=false; idleDone=false; carry=[]; restarts=0;
+  userStopped=false; fatalErr=false; carry=[]; restarts=0;
   heardEl.textContent=''; resEl.className=''; resEl.textContent='…';
+  clearTimeout(idleTimer);
+  idleTimer=setTimeout(function(){ userStopped=true; try{ rec.stop(); }catch(e){} },180000); /* sécurité : 3 min */
   beginSession();
 }
 function beginSession(){
-  let segs=[], gotText=false, hadError=false;
+  let segs=[];
   rec=new SR();
   rec.lang=(lang==='ar')?'ar-SA':'fr-FR';
   rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
-  rec.onstart=function(){ setListening(true); setStatus(I18N[lang].keepOn); armIdle(9000); };
+  rec.onstart=function(){ setListening(true); setStatus(I18N[lang].keepOn); };
   rec.onresult=function(ev){
     const all=[];
     for(let i=0;i<ev.results.length;i++) all.push(ev.results[i][0].transcript);
     segs=mergeSeg(all);
     const text=carry.concat(segs).join(' ').replace(/\s+/g,' ').trim();
-    if(text){ gotText=true; heardEl.textContent=I18N[lang].heard+text; previewTry(text); armIdle(3500); }
+    if(text){ heardEl.textContent=I18N[lang].heard+text; previewTry(text); }
   };
   rec.onerror=function(e){
-    hadError=true;
-    if(e.error==='not-allowed'||e.error==='service-not-allowed') userStopped=true;
-    if(e.error!=='aborted' && e.error!=='no-speech') setStatus(I18N[lang].mic[e.error]||('Erreur : '+e.error),true);
+    if(e.error==='no-speech'||e.error==='aborted') return;
+    fatalErr=true;
+    setStatus(I18N[lang].mic[e.error]||('Erreur : '+e.error),true);
   };
   rec.onend=function(){
-    clearTimeout(idleTimer);
     const full=carry.concat(segs);
-    /* Le moteur s'est arrêté seul alors que l'utilisateur parlait : on reprend l'écoute. */
-    if(!userStopped && !idleDone && gotText && !hadError && restarts<8){
-      restarts++; carry=full; setTimeout(beginSession,120); return;
+    if(!userStopped && !fatalErr && restarts<40){
+      restarts++; carry=full; setTimeout(beginSession,150); return;
     }
+    clearTimeout(idleTimer);
     setListening(false);
     const text=full.join(' ').replace(/\s+/g,' ').trim();
     if(text){ handleMatches([text]); }
-    else if(!hadError){ resEl.textContent='0'; setStatus(I18N[lang].mic['no-speech'],true); }
-    else { resEl.textContent='0'; }
+    else{ resEl.textContent='0'; if(!fatalErr) setStatus(I18N[lang].mic['no-speech'],true); }
   };
-  try{ rec.start(); }catch(e){ setStatus(String(e),true); }
+  try{ rec.start(); }catch(e){ fatalErr=true; setStatus(String(e),true); }
 }
 micBtn.addEventListener('click',function(){
   if(NSR){
