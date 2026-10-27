@@ -362,6 +362,7 @@ const I18N={
     title:'Calculatrice vocale', tts:'Lire le résultat à voix haute', hist:'Historique', clear:'Effacer',
     empty:'Aucun calcul pour le moment.', ph:'Dites ou saisissez un calcul',
     tap:'Appuyez sur le micro et parlez.', listening:'Je vous écoute…', heard:'Entendu : ',
+    keepOn:'Je vous écoute… Dites l’opération, puis touchez le micro pour terminer.',
     prompt:'Dites l’opération',
     nosr:'La reconnaissance vocale n’est pas disponible sur ce navigateur. Utilisez Chrome ou le clavier ci-dessous.',
     err:{unknown:function(x){return 'Mot non compris : « '+x+' ».';},syntax:'Expression incomplète ou incorrecte.',
@@ -380,6 +381,7 @@ const I18N={
     title:'آلة حاسبة صوتية', tts:'قراءة النتيجة بصوت عالٍ', hist:'السجل', clear:'مسح',
     empty:'لا توجد عمليات بعد.', ph:'انطق أو اكتب عملية حسابية',
     tap:'اضغط على الميكروفون وتكلّم.', listening:'أنا أستمع إليك…', heard:'سُمع: ',
+    keepOn:'أنا أستمع… انطق العملية ثم المس الميكروفون للإنهاء.',
     prompt:'انطق العملية',
     nosr:'التعرف على الصوت غير متاح في هذا المتصفح. استعمل Chrome أو لوحة الأرقام أدناه.',
     err:{unknown:function(x){return 'كلمة غير مفهومة: «'+x+'».';},syntax:'العملية ناقصة أو غير صحيحة.',
@@ -535,30 +537,66 @@ function setListening(on){
   listening=on; micBtn.classList.toggle('on',on);
   setStatus(on?I18N[lang].listening:I18N[lang].tap);
 }
+/* Écoute continue (moteur de Chrome) : une seule session longue, avec reprise automatique si le
+   moteur s'arrête trop tôt. On termine au toucher du micro ou après ~3,5 s de silence. */
+let userStopped=false, idleDone=false, idleTimer=null, carry=[], restarts=0;
+function previewTry(text){
+  try{ const r=calculate(text); resEl.className=''; resEl.textContent=fmt(r.value); inp.value=r.expr; }catch(e){}
+}
+function mergeSeg(list){
+  /* Sur Android, Chrome renvoie parfois des résultats cumulatifs (« 2400 », « 2400 fois », « 2400 fois 6 ») :
+     on garde la version la plus complète au lieu d'additionner. */
+  const out=[];
+  list.forEach(function(t){
+    t=String(t).trim(); if(!t) return;
+    if(out.length){
+      const a=out[out.length-1].toLowerCase(), b=t.toLowerCase();
+      if(b.indexOf(a)===0){ out[out.length-1]=t; return; }
+      if(a.indexOf(b)===0) return;
+    }
+    out.push(t);
+  });
+  return out;
+}
+function armIdle(ms){
+  clearTimeout(idleTimer);
+  idleTimer=setTimeout(function(){ idleDone=true; try{ rec.stop(); }catch(e){} },ms);
+}
 function startRec(){
+  userStopped=false; idleDone=false; carry=[]; restarts=0;
+  heardEl.textContent=''; resEl.className=''; resEl.textContent='…';
+  beginSession();
+}
+function beginSession(){
+  let segs=[], gotText=false, hadError=false;
   rec=new SR();
   rec.lang=(lang==='ar')?'ar-SA':'fr-FR';
-  rec.interimResults=true; rec.continuous=false; rec.maxAlternatives=4;
-  rec.onstart=function(){ setListening(true); };
-  rec.onerror=function(e){
-    const m=I18N[lang].mic[e.error];
-    if(e.error!=='aborted') setStatus(m||('Erreur : '+e.error),true);
-  };
-  rec.onend=function(){ listening=false; micBtn.classList.remove('on'); if(!statusEl.classList.contains('err')) setStatus(I18N[lang].tap); };
+  rec.continuous=true; rec.interimResults=true; rec.maxAlternatives=1;
+  rec.onstart=function(){ setListening(true); setStatus(I18N[lang].keepOn); armIdle(9000); };
   rec.onresult=function(ev){
-    const last=ev.results[ev.results.length-1];
-    if(!last.isFinal){
-      let tmp=''; for(let i=0;i<ev.results.length;i++) tmp+=ev.results[i][0].transcript;
-      heardEl.textContent=I18N[lang].heard+tmp; return;
+    const all=[];
+    for(let i=0;i<ev.results.length;i++) all.push(ev.results[i][0].transcript);
+    segs=mergeSeg(all);
+    const text=carry.concat(segs).join(' ').replace(/\s+/g,' ').trim();
+    if(text){ gotText=true; heardEl.textContent=I18N[lang].heard+text; previewTry(text); armIdle(3500); }
+  };
+  rec.onerror=function(e){
+    hadError=true;
+    if(e.error==='not-allowed'||e.error==='service-not-allowed') userStopped=true;
+    if(e.error!=='aborted' && e.error!=='no-speech') setStatus(I18N[lang].mic[e.error]||('Erreur : '+e.error),true);
+  };
+  rec.onend=function(){
+    clearTimeout(idleTimer);
+    const full=carry.concat(segs);
+    /* Le moteur s'est arrêté seul alors que l'utilisateur parlait : on reprend l'écoute. */
+    if(!userStopped && !idleDone && gotText && !hadError && restarts<8){
+      restarts++; carry=full; setTimeout(beginSession,120); return;
     }
-    heardEl.textContent=I18N[lang].heard+last[0].transcript;
-    let firstErr=null;
-    for(let k=0;k<last.length;k++){
-      try{ showResult(calculate(last[k].transcript)); setStatus(I18N[lang].tap); return; }
-      catch(e){ if(!firstErr) firstErr=e; }
-    }
-    inp.value=last[0].transcript;
-    showError(firstErr);
+    setListening(false);
+    const text=full.join(' ').replace(/\s+/g,' ').trim();
+    if(text){ handleMatches([text]); }
+    else if(!hadError){ resEl.textContent='0'; setStatus(I18N[lang].mic['no-speech'],true); }
+    else { resEl.textContent='0'; }
   };
   try{ rec.start(); }catch(e){ setStatus(String(e),true); }
 }
@@ -569,7 +607,7 @@ micBtn.addEventListener('click',function(){
     startNative(); return;
   }
   if(!SR){ setStatus(I18N[lang].nosr,true); return; }
-  if(listening){ rec.stop(); return; }
+  if(listening){ userStopped=true; clearTimeout(idleTimer); try{ rec.stop(); }catch(e){} return; }
   if('speechSynthesis' in window) speechSynthesis.cancel();
   setStatus('');
   startRec();
