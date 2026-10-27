@@ -254,6 +254,7 @@ function tokenize(text){
   s=s.replace(/(?<=\p{L})-(?=\p{L})/gu,' ');
   s=s.replace(/(\d),(\d)/g,'$1.$2');
   s=s.replace(/(\d)[ \u00a0\u202f](?=\d{3}(?!\d))/g,'$1');
+  s=s.replace(/(\d) (0{2,3})(?!\d)/g,'$1$2');   /* \u00ab 6 00 \u00bb \u2192 600 (segments coup\u00e9s) */
   s=s.replace(/(\d)(?=\p{L})/gu,'$1 ').replace(/(\p{L})(?=\d)/gu,'$1 ');
   s=s.replace(/quatre vingts?(?![\p{L}\p{N}])/gu,'quatrevingt');
   s=' '+s+' ';
@@ -269,7 +270,14 @@ function tokenize(text){
     if(/^[+\-*\/^()%]$/.test(t) || t==='sqrt'){ out.push(t); i++; continue; }
     if(t==='et'){ out.push('+'); i++; continue; }
     let num=null;
-    if(/^\d+(\.\d+)?$/.test(t)){ num={s:t}; i++; }
+    if(/^\d+(\.\d+)?$/.test(t)){
+      num={s:t}; i++;
+      /* « 6 cents », « 3 mille », « 2 millions » : chiffre suivi d'un mot d'échelle */
+      while(i<w.length){
+        const nx=NUM[w[i]];
+        if(nx && (nx.t==='s'||nx.v===100)){ num.s=String(parseFloat(num.s)*nx.v); i++; } else break;
+      }
+    }
     else { const r=numSeq(w,i); if(r){ num={s:String(r.v)}; i=r.next; } }
     if(!num) throw new CalcError('unknown',t);
     if(i<w.length && DEC.has(w[i])){
@@ -348,6 +356,7 @@ const I18N={
     title:'Calculatrice vocale', tts:'Lire le résultat à voix haute', hist:'Historique', clear:'Effacer',
     empty:'Aucun calcul pour le moment.', ph:'Dites ou saisissez un calcul',
     tap:'Appuyez sur le micro et parlez.', listening:'Je vous écoute…', heard:'Entendu : ',
+    keepOn:'Je vous écoute… Dites l’opération, puis touchez le micro pour terminer.',
     nosr:'La reconnaissance vocale n’est pas disponible sur ce navigateur. Utilisez Chrome ou le clavier ci-dessous.',
     err:{unknown:function(x){return 'Mot non compris : « '+x+' ».';},syntax:'Expression incomplète ou incorrecte.',
          div0:'Division par zéro impossible.',math:'Opération mathématique impossible.',empty:'Rien à calculer.'},
@@ -365,6 +374,7 @@ const I18N={
     title:'آلة حاسبة صوتية', tts:'قراءة النتيجة بصوت عالٍ', hist:'السجل', clear:'مسح',
     empty:'لا توجد عمليات بعد.', ph:'انطق أو اكتب عملية حسابية',
     tap:'اضغط على الميكروفون وتكلّم.', listening:'أنا أستمع إليك…', heard:'سُمع: ',
+    keepOn:'أنا أستمع… انطق العملية ثم المس الميكروفون للإنهاء.',
     nosr:'التعرف على الصوت غير متاح في هذا المتصفح. استعمل Chrome أو لوحة الأرقام أدناه.',
     err:{unknown:function(x){return 'كلمة غير مفهومة: «'+x+'».';},syntax:'العملية ناقصة أو غير صحيحة.',
          div0:'لا يمكن القسمة على صفر.',math:'عملية رياضية غير ممكنة.',empty:'لا يوجد ما يُحسب.'},
@@ -487,6 +497,12 @@ function handleMatches(list){
   inp.value=list[0];
   showError(firstErr);
 }
+/* Android coupe l'écoute à la moindre pause : on enchaîne plusieurs écoutes et on assemble
+   les segments, jusqu'à ce que l'utilisateur touche le micro (ou après un silence prolongé). */
+let nativeStop=false;
+function previewTry(text){
+  try{ const r=calculate(text); resEl.className=''; resEl.textContent=fmt(r.value); inp.value=r.expr; }catch(e){}
+}
 async function startNative(){
   try{
     const av=await NSR.available();
@@ -494,15 +510,31 @@ async function startNative(){
     let p=await NSR.checkPermissions();
     if(!p||p.speechRecognition!=='granted'){ p=await NSR.requestPermissions(); }
     if(!p||p.speechRecognition!=='granted'){ setStatus(I18N[lang].mic['not-allowed'],true); return; }
-    setStatus(''); heardEl.textContent=''; setListening(true);
-    const r=await NSR.start({language:(lang==='ar')?'ar-SA':'fr-FR',maxResults:4,partialResults:false,popup:false});
-    setListening(false);
-    handleMatches(r&&r.matches);
   }catch(e){
-    setListening(false);
-    const msg=String((e&&e.message)||e||'');
-    setStatus(/denied|permission/i.test(msg)?I18N[lang].mic['not-allowed']:msg,true);
+    setStatus(String((e&&e.message)||e||''),true); return;
   }
+  nativeStop=false; heardEl.textContent=''; resEl.className=''; resEl.textContent='…';
+  setListening(true); setStatus(I18N[lang].keepOn);
+  let buf='', empty=0, busy=0, fatal=null;
+  while(!nativeStop){
+    const t0=Date.now(); let seg=null;
+    try{
+      const r=await NSR.start({language:(lang==='ar')?'ar-SA':'fr-FR',maxResults:4,partialResults:false,popup:false});
+      seg=(r&&r.matches&&r.matches[0])||null;
+    }catch(e){
+      const msg=String((e&&e.message)||e||'');
+      if(/denied|permission/i.test(msg)){ fatal=I18N[lang].mic['not-allowed']; break; }
+      if(/busy/i.test(msg) && busy<5){ busy++; await new Promise(function(r){setTimeout(r,500);}); continue; }
+      if(Date.now()-t0<600 && !/no match|no speech|timeout/i.test(msg)){ fatal=msg; break; }
+    }
+    if(seg){ buf=(buf+' '+seg).trim(); empty=0; heardEl.textContent=I18N[lang].heard+buf; previewTry(buf); }
+    else if(!nativeStop){ empty++; if(buf||empty>=2) break; }
+    if(!nativeStop) await new Promise(function(r){setTimeout(r,120);});
+  }
+  setListening(false);
+  if(buf){ handleMatches([buf]); }
+  else if(fatal){ resEl.textContent='0'; setStatus(fatal,true); }
+  else { resEl.textContent='0'; setStatus(I18N[lang].mic['no-speech'],true); }
 }
 function setListening(on){
   listening=on; micBtn.classList.toggle('on',on);
@@ -537,7 +569,7 @@ function startRec(){
 }
 micBtn.addEventListener('click',function(){
   if(NSR){
-    if(listening){ try{ NSR.stop(); }catch(e){} return; }
+    if(listening){ nativeStop=true; try{ NSR.stop(); }catch(e){} return; }
     if('speechSynthesis' in window) speechSynthesis.cancel();
     startNative(); return;
   }
